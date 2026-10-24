@@ -53,6 +53,17 @@ def main():
     print("\nBrier score by horizon (lower is better; skill > 0 beats always guessing the base rate)")
     print(summary.round(4).to_string())
 
+    if "topic" in f:
+        by_topic = (f[f.days == 7].assign(sq_err=lambda d: (d.price - d.resolved_yes) ** 2,
+                                          err=lambda d: d.resolved_yes - d.price)
+                      .groupby("topic")
+                      .agg(n=("sq_err", "size"), brier=("sq_err", "mean"),
+                           mean_forecast=("price", "mean"), observed=("resolved_yes", "mean"))
+                      .sort_values("brier", ascending=False))
+        by_topic = by_topic[by_topic.n >= 30]
+        print("\nAccuracy by topic, 7 days out (topics with 30+ markets; worst first)")
+        print(by_topic.round(3).to_string())
+
     horizons = sorted(f.days.unique())
     fig, axes = plt.subplots(1, len(horizons), figsize=(5 * len(horizons), 5), sharey=True)
     axes = np.atleast_1d(axes)

@@ -29,7 +29,9 @@ All data goes into a local DuckDB database (`data/markets.duckdb`), with these t
 
 - Only binary markets that resolved cleanly to 0 or 1 are used. Voided or split markets are dropped.
 - Markets with low volume (default under $10k) are filtered out so that dead markets don't distort the results.
+- Horizons are measured from the earlier of the end date and the close time. Markets often close days late because of resolution lag, and measuring from the close would leak the known outcome into the "forecast."
 - Each forecast is the last traded price before the horizon. If that price is more than 48 hours older than the horizon, it's dropped.
+- Topics (politics, sports, crypto, economics, and so on) come from a transparent keyword classifier (`src/categorize.py`), which will be audited against a hand-labeled sample.
 - Accuracy is measured with Brier scores and skill against a base-rate forecaster. Calibration is shown in binned curves with 95% Wilson intervals.
 
 ## Run it
@@ -38,7 +40,7 @@ All data goes into a local DuckDB database (`data/markets.duckdb`), with these t
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python src/fetch_polymarket.py markets --min-volume 10000 --max-markets 5000
+python src/fetch_polymarket.py markets --min-volume 10000
 python src/fetch_polymarket.py prices
 python src/build_forecasts.py
 python src/calibration.py        # prints tables, saves figures/calibration_by_horizon.png

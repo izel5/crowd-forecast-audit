@@ -2,13 +2,14 @@
 Fetch resolved binary Polymarket markets and their full price history into DuckDB.
 
 Usage:
-    python src/fetch_polymarket.py markets --min-volume 10000 --max-markets 5000
+    python src/fetch_polymarket.py markets --min-volume 10000
     python src/fetch_polymarket.py prices
 Both steps resume where they left off if interrupted.
 """
 import argparse
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -153,7 +154,7 @@ def fetch_history(token_id):
             return points
 
 
-def fetch_prices(con):
+def fetch_prices(con, workers):
     todo = con.execute(
         """
         SELECT m.market_id, m.yes_token FROM markets m
@@ -162,37 +163,51 @@ def fetch_prices(con):
         """,
         [PLATFORM],
     ).fetchall()
-    for market_id, token in tqdm(todo, desc="price histories"):
-        now = datetime.now(timezone.utc)
-        try:
-            pts = fetch_history(token)
-        except Exception as e:  # keep going; log and retry later with --retry-errors
-            con.execute("INSERT OR REPLACE INTO fetch_log VALUES (?, ?, 'error', 0, ?)", [PLATFORM, market_id, now])
-            tqdm.write(f"error on {market_id}: {e}")
-            continue
-        if pts:
-            df = pd.DataFrame(
-                {
-                    "platform": PLATFORM,
-                    "market_id": market_id,
-                    "ts": pd.to_datetime([p.get("timestamp", p.get("t")) for p in pts], unit="s", utc=True),
-                    "price": [float(p.get("price", p.get("p"))) for p in pts],
-                }
-            )
-            con.execute("INSERT OR IGNORE INTO prices SELECT * FROM df")
-        status = "ok" if pts else "empty"
-        con.execute("INSERT OR REPLACE INTO fetch_log VALUES (?, ?, ?, ?, ?)", [PLATFORM, market_id, status, len(pts), now])
 
+    def task(item):
+        market_id, token = item
+        try:
+            return market_id, fetch_history(token), None
+        except Exception as e:  # keep going; log and retry later with --retry-errors
+            return market_id, None, e
+
+    # Downloads run in parallel threads; all database writes stay on this thread.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(task, item) for item in todo]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="price histories"):
+            market_id, pts, err = fut.result()
+            save_history(con, market_id, pts, err)
+
+
+def save_history(con, market_id, pts, err):
+    now = datetime.now(timezone.utc)
+    if err is not None:
+        con.execute("INSERT OR REPLACE INTO fetch_log VALUES (?, ?, 'error', 0, ?)", [PLATFORM, market_id, now])
+        tqdm.write(f"error on {market_id}: {err}")
+        return
+    if pts:
+        df = pd.DataFrame(
+            {
+                "platform": PLATFORM,
+                "market_id": market_id,
+                "ts": pd.to_datetime([p.get("timestamp", p.get("t")) for p in pts], unit="s", utc=True),
+                "price": [float(p.get("price", p.get("p"))) for p in pts],
+            }
+        )
+        con.execute("INSERT OR IGNORE INTO prices SELECT * FROM df")
+    status = "ok" if pts else "empty"
+    con.execute("INSERT OR REPLACE INTO fetch_log VALUES (?, ?, ?, ?, ?)", [PLATFORM, market_id, status, len(pts), now])
 
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("markets")
     m.add_argument("--min-volume", type=float, default=10_000)
-    m.add_argument("--max-markets", type=int, default=5_000)
+    m.add_argument("--max-markets", type=int, default=1_000_000)
     m.add_argument("--page-size", type=int, default=500)
     p = sub.add_parser("prices")
     p.add_argument("--retry-errors", action="store_true")
+    p.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
     con = connect()
@@ -201,7 +216,7 @@ def main():
     else:
         if args.retry_errors:
             con.execute("DELETE FROM fetch_log WHERE platform = ? AND status = 'error'", [PLATFORM])
-        fetch_prices(con)
+        fetch_prices(con, args.workers)
 
 
 if __name__ == "__main__":
