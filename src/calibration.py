@@ -64,6 +64,14 @@ def main():
         print("\nAccuracy by topic, 7 days out (topics with 30+ markets; worst first)")
         print(by_topic.round(3).to_string())
 
+    if "recurring" in f:
+        by_kind = (f.assign(sq_err=(f.price - f.resolved_yes) ** 2,
+                            kind=f.recurring.map({True: "recurring series", False: "one-off event"}))
+                     .groupby(["days", "kind"])
+                     .agg(n=("sq_err", "size"), brier=("sq_err", "mean")))
+        print("\nOne-off events vs. recurring series (sports games, weekly crypto, weather)")
+        print(by_kind.round(4).to_string())
+
     horizons = sorted(f.days.unique())
     fig, axes = plt.subplots(1, len(horizons), figsize=(5 * len(horizons), 5), sharey=True)
     axes = np.atleast_1d(axes)

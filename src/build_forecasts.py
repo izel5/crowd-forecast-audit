@@ -25,7 +25,9 @@ WITH horizons AS (
     SELECT unnest([{", ".join(map(str, HORIZONS_DAYS))}]) AS days
 ),
 asks AS (
-    SELECT m.platform, m.market_id, t.topic, m.volume, m.resolved_yes, h.days,
+    SELECT m.platform, m.market_id, t.topic,
+           json_extract_string(m.raw, '$.events[0].seriesSlug') IS NOT NULL AS recurring,
+           m.volume, m.resolved_yes, h.days,
            least(m.closed_at, m.end_at) AS resolved_at,
            least(m.closed_at, m.end_at) - to_days(h.days) AS as_of
     FROM markets m
@@ -61,6 +63,11 @@ def main():
     print(con.execute(
         "SELECT days AS horizon_days, count(*) AS n, round(avg(resolved_yes), 3) AS base_rate "
         "FROM forecasts GROUP BY 1 ORDER BY 1"
+    ).df().to_string(index=False))
+    print()
+    print(con.execute(
+        "SELECT CASE WHEN recurring THEN 'recurring series' ELSE 'one-off event' END AS kind, "
+        "count(DISTINCT market_id) AS markets FROM forecasts GROUP BY 1"
     ).df().to_string(index=False))
     print()
     print(con.execute(

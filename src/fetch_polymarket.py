@@ -154,15 +154,21 @@ def fetch_history(token_id):
             return points
 
 
-def fetch_prices(con, workers):
+def fetch_prices(con, workers, min_life_days, one_off_only):
+    # Skip markets that lived too briefly to have a 1-day-ahead forecast (e.g. 15-minute
+    # crypto markets). Fetch one-off event markets first, then recurring series, biggest first.
     todo = con.execute(
-        """
+        f"""
         SELECT m.market_id, m.yes_token FROM markets m
         LEFT JOIN fetch_log f ON f.platform = m.platform AND f.market_id = m.market_id
         WHERE m.platform = ? AND f.market_id IS NULL
+          AND epoch(least(m.closed_at, m.end_at) - m.created_at) >= ? * 86400
+          {"AND json_extract_string(m.raw, '$.events[0].seriesSlug') IS NULL" if one_off_only else ""}
+        ORDER BY json_extract_string(m.raw, '$.events[0].seriesSlug') IS NOT NULL, m.volume DESC
         """,
-        [PLATFORM],
+        [PLATFORM, min_life_days],
     ).fetchall()
+    print(f"{len(todo):,} markets left to fetch")
 
     def task(item):
         market_id, token = item
@@ -208,6 +214,8 @@ def main():
     p = sub.add_parser("prices")
     p.add_argument("--retry-errors", action="store_true")
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--min-life-days", type=float, default=1.5)
+    p.add_argument("--one-off-only", action="store_true")
     args = ap.parse_args()
 
     con = connect()
@@ -216,7 +224,7 @@ def main():
     else:
         if args.retry_errors:
             con.execute("DELETE FROM fetch_log WHERE platform = ? AND status = 'error'", [PLATFORM])
-        fetch_prices(con, args.workers)
+        fetch_prices(con, args.workers, args.min_life_days, args.one_off_only)
 
 
 if __name__ == "__main__":
